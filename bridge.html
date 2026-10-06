@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Bar Review PDF Study Reader</title>
   <style>
-    html, body, #inko {
+    html, body {
       margin: 0;
       width: 100%;
       height: 100%;
@@ -31,10 +31,50 @@
       transition: opacity .2s ease;
     }
     #status.show { opacity: 1; }
+
+    body {display:flex;background:#f8faf5;color:#27352f}
+    #inko {flex:1;min-width:0;height:100vh}
+    #studyPanel {width:290px;flex-shrink:0;display:flex;flex-direction:column;border-left:1px solid #dce3d9;background:#fafbf7;height:100vh;box-sizing:border-box}
+    #studyPanel.collapsed {width:44px}
+    #studyPanel.collapsed .panel-content {display:none}
+    #trackerToggle {border:0;background:#edf2e8;padding:10px;text-align:left;color:#365241;cursor:pointer;font-weight:bold;min-height:40px}
+    .panel-content {display:flex;flex-direction:column;min-height:0;flex:1;padding:12px;gap:10px}
+    h2 {font-size:16px;margin:0} #trackerCounts,#notesStatus {font-size:12px;color:#607065} #notesStatus {min-height:14px;overflow-wrap:anywhere}
+    #addNote,#saveNote {background:#e9efd8;border:1px solid #cbd4b5;color:#3d5235;border-radius:7px;padding:9px;cursor:pointer}
+    #addNote.active {background:#fff0c2} #addNote:disabled {opacity:.5;cursor:default}
+    #placementHint {background:#fff6db;padding:8px;font-size:12px;border-radius:7px}
+    #trackerFilter {border:1px solid #d5ddd0;border-radius:6px;padding:7px;background:white;color:#354536}
+    #trackerList {flex:1;overflow:auto;min-height:70px} .empty {font-size:13px;line-height:1.5;color:#6a776a}
+    .tracker-entry {border:1px solid #dee5d8;border-radius:8px;background:white;margin-bottom:8px;overflow:hidden}
+    .tracker-entry.note {border-left:4px solid #eddba7}
+    .entry-jump {display:block;width:100%;white-space:pre-line;text-align:left;line-height:1.5;border:0;background:none;padding:10px;font-size:12px;color:#374a3c;cursor:pointer;overflow-wrap:anywhere}
+    .entry-action {border:0;background:#f3f5ec;color:#506344;font-size:11px;padding:6px 10px;cursor:pointer;width:100%;text-align:left}
+    #noteEditor {border-top:1px solid #dce3d6;padding-top:10px} #noteEditor[hidden],#placementHint[hidden] {display:none}
+    #noteText {box-sizing:border-box;width:100%;min-height:90px;max-height:30vh;resize:vertical;border:1px solid #d4dcc9;border-radius:7px;padding:9px;font:13px/1.5 Arial;background:white;color:#27352f;margin:7px 0}
+    .note-actions {display:flex;gap:6px} .note-actions button {font-size:12px;padding:7px;border-radius:6px;border:1px solid #d5ddcd;cursor:pointer}
+    #closeNote {background:#f3f5ee;color:#42523d} #deleteNote {background:#fff5ef;color:#8b4936}
+    @media(max-width:650px) {#studyPanel {width:225px}.panel-content {padding:8px}#studyPanel.collapsed {width:35px}}
   </style>
 </head>
 <body>
   <div id="inko"></div>
+  <aside id="studyPanel" aria-label="Highlights and notes tracker">
+    <button id="trackerToggle" type="button" aria-expanded="true">Study tracker</button>
+    <div class="panel-content">
+      <h2>Highlights &amp; notes</h2>
+      <div id="trackerCounts">0 highlights · 0 notes</div>
+      <button id="addNote" type="button" disabled>Add note</button>
+      <div id="placementHint" hidden>Click a spot on the PDF to place a note.</div>
+      <select id="trackerFilter" aria-label="Tracker filter"><option value="all">All highlights and notes</option><option value="highlights">Highlights only</option><option value="notes">Notes only</option></select>
+      <div id="trackerList"></div>
+      <section id="noteEditor" hidden aria-label="Note editor">
+        <strong id="noteLocation"></strong>
+        <textarea id="noteText" aria-label="Note text" placeholder="Write your note here..."></textarea>
+        <div class="note-actions"><button id="saveNote" type="button">Save now</button><button id="closeNote" type="button">Done</button><button id="deleteNote" type="button">Delete</button></div>
+      </section>
+      <div id="notesStatus" role="status" aria-live="polite"></div>
+    </div>
+  </aside>
   <div id="status"></div>
 
   <script src="./sdk/inko-sdk.js"></script>
@@ -126,11 +166,13 @@
           },
 
           onPdfLoaded: function () {
+            if (window.BarStudyTracker) BarStudyTracker.loaded();
             showStatus("");
             sendToParent({ type: "INKO_PDF_LOADED" });
           },
 
           onChange: function (canvasData) {
+            if (window.BarStudyTracker) BarStudyTracker.changed(canvasData);
             sendToParent({
               type: "INKO_CANVAS_CHANGED",
               canvasData: String(canvasData || "")
@@ -138,6 +180,7 @@
           },
 
           onSave: function (canvasData, ok, message) {
+            if (window.BarStudyTracker) BarStudyTracker.changed(canvasData);
             sendToParent({
               type: "INKO_SAVE_RESULT",
               ok: !!ok,
@@ -178,6 +221,7 @@
         }
 
         if (data.type === "BAR_REVIEW_SAVE_NOW") {
+          if (window.BarStudyTracker) BarStudyTracker.flush();
           if (viewer && typeof viewer.save === "function") {
             try { viewer.save(); } catch (error) { console.error(error); }
           }
@@ -191,8 +235,237 @@
         }
       });
 
+      window.BarBridge = {
+        allowedOrigin: isAllowedParentOrigin,
+        parentOrigin: function() { return parentOrigin; }
+      };
       startViewer();
     })();
   </script>
+<script>
+(function(root) {
+  'use strict';
+  function multiply(p,q) {
+    return [p[0]*q[0]+p[2]*q[1],p[1]*q[0]+p[3]*q[1],
+      p[0]*q[2]+p[2]*q[3],p[1]*q[2]+p[3]*q[3],
+      p[0]*q[4]+p[2]*q[5]+p[4],p[1]*q[4]+p[3]*q[5]+p[5]];
+  }
+  function point(value) {
+    if (!Array.isArray(value)) return null;
+    const p=Array.isArray(value[0])?value[0]:value;
+    return Number.isFinite(p[0])&&Number.isFinite(p[1])?p:null;
+  }
+  function bounds(props,matrix) {
+    const pts=(props.segments||[]).map(point).filter(Boolean);
+    if (!pts.length && props.point) { const p=point(props.point); if(p)pts.push(p); }
+    if (!pts.length) return null;
+    const xs=[],ys=[];
+    pts.forEach(p=>{xs.push(matrix[0]*p[0]+matrix[2]*p[1]+matrix[4]);ys.push(matrix[1]*p[0]+matrix[3]*p[1]+matrix[5]);});
+    const pad=(Number(props.strokeWidth)||0)/2;
+    return {x:Math.min(...xs)-pad,y:Math.min(...ys)-pad,
+      width:Math.max(...xs)-Math.min(...xs)+2*pad,
+      height:Math.max(...ys)-Math.min(...ys)+2*pad};
+  }
+  function highlights(canvasData) {
+    let pages; try {pages=JSON.parse(canvasData||'{}');}catch{return [];}
+    const result=[];
+    Object.keys(pages).filter(k=>/^[1-9]\d*$/.test(k)).sort((a,b)=>Number(a)-Number(b)).forEach(key=>{
+      let layer=pages[key];try{if(typeof layer==='string')layer=JSON.parse(layer);}catch{return;}
+      let ordinal=0;
+      function visit(item,parent,marked) {
+        if(!Array.isArray(item)||typeof item[0]!=='string'||!item[1])return;
+        const p=item[1],m=Array.isArray(p.matrix)&&p.matrix.length===6?multiply(parent,p.matrix):parent;
+        if(p.data&&p.data.isSelectionUI)return;
+        const isHighlight=marked||!!(p.data&&p.data.isHighlighter)||p.blendMode==='multiply';
+        if(Array.isArray(p.children))p.children.forEach(child=>visit(child,m,isHighlight));
+        else if(isHighlight) {
+          const b=bounds(p,m);
+          if(b)result.push({id:'highlight-'+key+'-'+(++ordinal),page:Number(key),bounds:b});
+        }
+      }
+      if(Array.isArray(layer)&&typeof layer[0]==='string')visit(layer,[1,0,0,1,0,0],false);
+      else if(Array.isArray(layer))layer.forEach(item=>visit(item,[1,0,0,1,0,0],false));
+    });
+    return result;
+  }
+  const api={highlights,multiply,bounds};
+  if(typeof module!=='undefined'&&module.exports)module.exports=api;
+  else root.BarStudyCore=api;
+})(typeof window!=='undefined'?window:globalThis);
+
+</script>
+<script>
+(function() {
+  'use strict';
+  let notes=[],canvasData='',loaded=false,noteMode=false,selectedNote=null;
+  let innerDoc=null,observer=null,refreshPending=false;
+  let notesRevision=0,notesDirty=false,filter='all',lastHighlightKey='';
+  const byId=id=>document.getElementById(id);
+  const clamp=v=>Math.max(0,Math.min(1,Number(v)||0));
+  const emit=(type,extra)=>window.parent.postMessage(Object.assign({type},extra||{}),window.BarBridge.parentOrigin()||'*');
+  const uuid=()=>window.crypto&&crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);
+  function status(text){byId('notesStatus').textContent=text;}
+  function publishNotes() {
+    notesDirty=true;++notesRevision;status('Saving notes...');
+    emit('INKO_NOTES_CHANGED',{notes:JSON.parse(JSON.stringify(notes)),revision:notesRevision});
+  }
+  function pageEl(page){return innerDoc&&innerDoc.querySelector('.scroll-page-container[data-page="'+Number(page)+'"]');}
+  function scale(){const el=innerDoc&&innerDoc.querySelector('.zoom-info');const n=el&&parseFloat(el.textContent);return n>0?n/100:1;}
+  function highlightPosition(h) {
+    const el=pageEl(h.page);if(!el)return null;
+    const r=el.getBoundingClientRect(),z=scale();
+    return {page:h.page,x:clamp((h.bounds.x+h.bounds.width/2)*z/r.width),y:clamp((h.bounds.y+h.bounds.height/2)*z/r.height)};
+  }
+  function textFor(h) {
+    const el=pageEl(h.page);if(!el)return '';
+    const r=el.getBoundingClientRect(),z=scale(),b=h.bounds;
+    const area={left:r.left+b.x*z,right:r.left+(b.x+b.width)*z,
+      top:r.top+b.y*z,bottom:r.top+(b.y+b.height)*z};
+    const words=[];
+    el.querySelectorAll('.inko-text-layer span').forEach(span=>{
+      const t=span.getBoundingClientRect();
+      if(t.width&&t.height&&t.right>=area.left&&t.left<=area.right&&t.bottom>=area.top&&t.top<=area.bottom)words.push(span.textContent);
+    });
+    return words.join(' ').replace(/\s+/g,' ').trim().slice(0,180);
+  }
+  function jump(item,isHighlight) {
+    let el=pageEl(item.page);
+    if(!el&&innerDoc) {
+      const input=innerDoc.querySelector('input.page-input');
+      if(input){input.value=String(item.page);input.dispatchEvent(new innerDoc.defaultView.Event('change',{bubbles:true}));input.dispatchEvent(new innerDoc.defaultView.KeyboardEvent('keydown',{key:'Enter',bubbles:true}));}
+    }
+    return new Promise(resolve=>{
+      let attempts=0;
+      function go(){
+        el=pageEl(item.page);
+        if(!el){if(++attempts<30)setTimeout(go,100);else{status('Could not find this PDF page.');resolve(null);}return;}
+        el.scrollIntoView({block:'center',behavior:'auto'});
+        // Give virtualization time to render the page and text layer.
+        setTimeout(()=>{
+          const p=isHighlight?highlightPosition(item):item;
+          if(p){
+            const r=el.getBoundingClientRect();
+            let scroller=el.parentElement;
+            while(scroller&&scroller.scrollHeight<=scroller.clientHeight+2)scroller=scroller.parentElement;
+            if(scroller)scroller.scrollTop+=r.top+p.y*r.height-scroller.getBoundingClientRect().top-scroller.clientHeight/2;
+            const flash=innerDoc.createElement('div');flash.className='study-location-flash';
+            flash.style.left=(p.x*100)+'%';flash.style.top=(p.y*100)+'%';el.appendChild(flash);setTimeout(()=>flash.remove(),1600);
+          }
+          queueRefresh();resolve(p);
+        },250);
+      }go();
+    });
+  }
+  function button(text,handler,cls){const b=document.createElement('button');b.type='button';b.textContent=text;b.className=cls||'';b.onclick=handler;return b;}
+  function renderList(force) {
+    const list=byId('trackerList'),highlights=BarStudyCore.highlights(canvasData);
+    byId('trackerCounts').textContent=highlights.length+' highlights · '+notes.length+' notes';
+    const visibleText=innerDoc?Array.from(innerDoc.querySelectorAll('.scroll-page-container[data-page]')).map(p=>[p.dataset.page,(p.querySelector('.inko-text-layer')?.textContent||'').length]):[];
+    const key=JSON.stringify([canvasData,notes,filter,visibleText]);
+    if(!force&&key===lastHighlightKey)return;lastHighlightKey=key;list.replaceChildren();
+    const entries=[];
+    if(filter!=='notes')highlights.forEach(h=>entries.push({item:h,kind:'highlight'}));
+    if(filter!=='highlights')notes.forEach(n=>entries.push({item:n,kind:'note'}));
+    entries.sort((a,b)=>a.item.page-b.item.page||(a.item.y||a.item.bounds.y)-(b.item.y||b.item.bounds.y));
+    if(!entries.length){const p=document.createElement('p');p.className='empty';p.textContent=loaded?'Highlight a passage or add a note to start your tracker.':'Open a PDF to see its highlights and notes.';list.appendChild(p);}
+    entries.forEach(({item,kind})=>{
+      const card=document.createElement('article');card.className='tracker-entry '+kind;
+      const label=(kind==='note'?'Note':'Highlight')+' · Page '+item.page;
+      const summary=kind==='note'?item.text:textFor(item)||'Highlighted area';
+      const jumpButton=button(label+'\n'+summary,()=>{if(kind==='note'){jump(item,false);openEditor(item);}else jump(item,true);},'entry-jump');
+      card.appendChild(jumpButton);
+      if(kind==='highlight')card.appendChild(button('Add note',async()=>{
+        const p=await jump(item,true);if(p)openEditor(newNote(p));
+      },'entry-action'));
+      list.appendChild(card);
+    });
+  }
+  function newNote(p){return {id:uuid(),page:Number(p.page),x:clamp(p.x),y:clamp(p.y),text:'',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};}
+  function openEditor(note){
+    selectedNote=Object.assign({},note);byId('noteEditor').hidden=false;byId('noteLocation').textContent='Page '+note.page;
+    byId('noteText').value=note.text||'';byId('deleteNote').hidden=!notes.some(n=>n.id===note.id);
+    byId('noteText').focus();
+  }
+  function saveEditor() {
+    if(!selectedNote)return;
+    const text=byId('noteText').value.trim();if(!text){status('Write a note before saving.');return;}
+    const saved=Object.assign({},selectedNote,{text,updatedAt:new Date().toISOString()});
+    const index=notes.findIndex(n=>n.id===saved.id);if(index<0)notes.push(saved);else notes[index]=saved;
+    selectedNote=saved;byId('deleteNote').hidden=false;publishNotes();renderMarkers();renderList(true);
+  }
+  function closeEditor(){
+    if(selectedNote&&byId('noteText').value.trim())saveEditor();
+    selectedNote=null;byId('noteEditor').hidden=true;
+  }
+  function setNoteMode(on){noteMode=on;byId('addNote').classList.toggle('active',on);byId('addNote').textContent=on?'Cancel placing note':'Add note';if(innerDoc)innerDoc.body.classList.toggle('study-note-mode',on);byId('placementHint').hidden=!on;}
+  function renderMarkers(){
+    if(!innerDoc)return;
+    innerDoc.querySelectorAll('.study-note-marker').forEach(b=>{if(!notes.some(n=>n.id===b.dataset.noteId&&String(n.page)===b.closest('[data-page]').dataset.page))b.remove();});
+    notes.forEach(n=>{
+      const page=pageEl(n.page);if(!page)return;
+      let marker=Array.from(page.querySelectorAll('.study-note-marker')).find(b=>b.dataset.noteId===n.id);
+      if(!marker){marker=innerDoc.createElement('button');marker.type='button';marker.className='study-note-marker';marker.dataset.noteId=n.id;
+        marker.innerHTML='<svg viewBox="0 0 28 30" aria-hidden="true"><path d="M2 2H18V8L26 15L18 22V28H2Z" fill="#fff0c2" stroke="#b89a57" stroke-width="1.5"/><path d="M7 10H14M7 15H16M7 20H14" stroke="#8b7546" stroke-width="1.3"/></svg>';
+        marker.addEventListener('pointerdown',e=>{e.stopPropagation();});
+        marker.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();const current=notes.find(v=>v.id===marker.dataset.noteId);if(current)openEditor(current);});page.appendChild(marker);}
+      const left=(n.x*100)+'%',top=(n.y*100)+'%';if(marker.style.left!==left)marker.style.left=left;if(marker.style.top!==top)marker.style.top=top;
+      const label='Note on page '+n.page+': '+n.text;if(marker.title!==label){marker.title=label;marker.setAttribute('aria-label',label);}
+    });
+  }
+  function queueRefresh(){if(refreshPending)return;refreshPending=true;requestAnimationFrame(()=>{refreshPending=false;renderMarkers();renderList(false);});}
+  function attachInner(){
+    const frame=document.querySelector('#inko iframe');
+    if(!frame)return;
+    let doc;try{doc=frame.contentDocument;}catch{return;}
+    if(!doc||!doc.body||doc===innerDoc)return;
+    if(observer)observer.disconnect();innerDoc=doc;
+    const style=doc.createElement('style');style.textContent=`
+      .scroll-page-container {position:relative!important}
+      .study-note-marker {position:absolute!important;z-index:100!important;width:28px!important;height:30px!important;padding:0!important;border:0!important;background:transparent!important;cursor:pointer!important;transform:translate(-7px,-15px)!important;filter:drop-shadow(0 1px 2px #0003)!important}
+      .study-note-marker svg {display:block;width:100%;height:100%;pointer-events:none}
+      .study-note-marker:focus-visible {outline:2px solid #8b7546;outline-offset:3px}
+      .study-note-mode .scroll-page-container {cursor:crosshair!important}
+      .study-location-flash {position:absolute;pointer-events:none;z-index:101;width:48px;height:48px;border:3px solid #d2af55;border-radius:50%;transform:translate(-50%,-50%);background:#fff0c244}
+    `;doc.head.appendChild(style);
+    doc.addEventListener('pointerdown',e=>{
+      if(!noteMode||!loaded||e.target.closest('.study-note-marker'))return;
+      const page=e.target.closest('.scroll-page-container[data-page]');if(!page)return;
+      e.preventDefault();e.stopImmediatePropagation();
+      const r=page.getBoundingClientRect();const p={page:Number(page.dataset.page),x:(e.clientX-r.left)/r.width,y:(e.clientY-r.top)/r.height};
+      setNoteMode(false);openEditor(newNote(p));
+    },true);
+    doc.addEventListener('scroll',queueRefresh,true);
+    observer=new MutationObserver(queueRefresh);observer.observe(doc.body,{childList:true,subtree:true});
+    renderMarkers();setNoteMode(noteMode);
+  }
+  let editorTimer=null;
+  byId('noteText').addEventListener('input',()=>{clearTimeout(editorTimer);editorTimer=setTimeout(saveEditor,600);});
+  byId('saveNote').onclick=()=>{clearTimeout(editorTimer);saveEditor();};
+  byId('closeNote').onclick=()=>{clearTimeout(editorTimer);closeEditor();};
+  byId('deleteNote').onclick=()=>{if(!selectedNote)return;notes=notes.filter(n=>n.id!==selectedNote.id);selectedNote=null;byId('noteEditor').hidden=true;publishNotes();renderMarkers();renderList(true);};
+  byId('addNote').onclick=()=>{if(loaded)setNoteMode(!noteMode);};
+  byId('trackerToggle').onclick=()=>{byId('studyPanel').classList.toggle('collapsed');const expanded=!byId('studyPanel').classList.contains('collapsed');byId('trackerToggle').setAttribute('aria-expanded',String(expanded));byId('trackerToggle').textContent=expanded?'Study tracker':'‹';byId('trackerToggle').setAttribute('aria-label',expanded?'Collapse study tracker':'Open study tracker');};
+  byId('trackerFilter').onchange=e=>{filter=e.target.value;renderList(true);};
+  window.addEventListener('message',e=>{
+    if(e.source!==window.parent||!window.BarBridge.allowedOrigin(e.origin))return;
+    const data=e.data||{};
+    if(data.type==='BAR_REVIEW_LOAD_PDF') {
+      clearTimeout(editorTimer);notes=Array.isArray(data.notes)?data.notes:[];canvasData=String(data.canvasData||'');loaded=false;notesDirty=false;notesRevision=0;
+      selectedNote=null;byId('noteEditor').hidden=true;setNoteMode(false);status('');byId('addNote').disabled=true;lastHighlightKey='';renderMarkers();renderList(true);
+    }
+    if(data.type==='BAR_REVIEW_NOTES_SAVED'&&data.revision===notesRevision){notesDirty=false;status('Notes saved automatically');}
+    if(data.type==='BAR_REVIEW_NOTES_SAVE_FAILED'){status('Notes not saved: '+String(data.message||'Please retry.'));}
+  });
+  window.BarStudyTracker={
+    loaded(){loaded=true;byId('addNote').disabled=false;attachInner();renderList(true);},
+    changed(data){canvasData=String(data||'');attachInner();lastHighlightKey='';queueRefresh();},
+    flush(){clearTimeout(editorTimer);if(selectedNote&&byId('noteText').value.trim())saveEditor();emit('INKO_NOTES_SNAPSHOT',{notes:JSON.parse(JSON.stringify(notes)),revision:notesRevision});},
+    attach:attachInner
+  };
+  const hostObserver=new MutationObserver(()=>{attachInner();const f=document.querySelector('#inko iframe');if(f&&!f.dataset.studyObserved){f.dataset.studyObserved='1';f.addEventListener('load',attachInner);}});
+  hostObserver.observe(byId('inko'),{childList:true,subtree:true});renderList(true);
+})();
+
+</script>
 </body>
 </html>
