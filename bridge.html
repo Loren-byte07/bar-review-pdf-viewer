@@ -42,10 +42,18 @@
     (function () {
       "use strict";
 
-      var PARENT_ORIGINS = new Set([
-        "https://script.google.com",
-        "https://script.googleusercontent.com"
-      ]);
+      var parentOrigin = null;
+
+      function isAllowedParentOrigin(origin) {
+        try {
+          var url = new URL(origin);
+          if (url.protocol !== "https:") return false;
+          return url.hostname === "script.google.com" ||
+            url.hostname === "script.googleusercontent.com" ||
+            url.hostname.endsWith("-script.googleusercontent.com") ||
+            url.hostname.endsWith(".script.googleusercontent.com");
+        } catch (error) { return false; }
+      }
 
       var viewer = null;
       var viewerReady = false;
@@ -66,7 +74,7 @@
 
       function sendToParent(message) {
         // The bridge is embedded only by the Bar Review app.
-        window.parent.postMessage(message, "*");
+        window.parent.postMessage(message, parentOrigin || "*");
       }
 
       function loadPendingDocument() {
@@ -75,6 +83,10 @@
         var payload = pendingDocument;
         pendingDocument = null;
 
+        if (!payload.base64) {
+          sendToParent({type: "INKO_BRIDGE_ERROR", message: "The app sent empty PDF data."});
+          return;
+        }
         showStatus("Opening PDF…");
 
         try {
@@ -144,7 +156,13 @@
       }
 
       window.addEventListener("message", function (event) {
-        if (!PARENT_ORIGINS.has(event.origin)) return;
+        if (event.source !== window.parent) return;
+        if (!isAllowedParentOrigin(event.origin)) {
+          console.warn("Bar Review bridge rejected parent origin:", event.origin);
+          return;
+        }
+        if (parentOrigin && event.origin !== parentOrigin) return;
+        parentOrigin = event.origin;
 
         var data = event.data || {};
 
